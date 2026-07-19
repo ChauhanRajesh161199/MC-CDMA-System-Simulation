@@ -98,10 +98,12 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits)
             ofdmInput = zeros(Nfft,1);
             ofdmInput(guardLeft+1:guardLeft+usedSubcarriers) = txCombined(:);
             ofdmTime = ifft(ofdmInput,Nfft);
-            
-            %% CP ADDITION
+            %% CP ADDITION (with power normalization)
+            scaleFactor = Nfft / sqrt(usedSubcarriers * noOfUsers);  % normalizes avg power to 1
+            ofdmTime = ofdmTime * scaleFactor;
             cp = ofdmTime(end-cpLength+1:end);
             OfdmFrame(:,ofdm) = [cp; ofdmTime];
+           
         end
         
         %% SERIALIZE
@@ -113,7 +115,6 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits)
     end
     disp('Transmitter Complete');
 end
-
 %% WALSH FUNCTION
 function H = generateWalshCode(sf)
     H = 1;
