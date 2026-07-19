@@ -13,9 +13,20 @@ usedSubcarriers = Nfft - guardLeft - guardRight;
 spreadingFactor = 4;
 noOfOfdmSymbolsPerFrame = 4;
 bitspersymbol = 2; % QPSK
-% Channel Coder
+%% Code Rate Configuration
+targetCodeRate = 1/4;
+
+%% CHANNEL CODER 
+if (1/targetCodeRate == 2)
+    GeneratorPolynomials = [7 5];
+elseif (1/targetCodeRate == 3)
+    GeneratorPolynomials = [7 5 3];
+elseif (1/targetCodeRate == 4) 
+    GeneratorPolynomials = [7 5 3 1];
+else 
+    error('Invalid code rate! Please set targetCodeRate strictly to 1/2, 1/3, or 1/4.');
+end
 ConstraintLength = 3;
-GeneratorPolynomials = [7 5];
 codeRate = 1/length(GeneratorPolynomials);
 trellis = poly2trellis(ConstraintLength, GeneratorPolynomials);
 % Frame Structure & Synchronization
@@ -44,8 +55,9 @@ walshCode = generateWalshCode(spreadingFactor);
 %% Transmitter
 % Generate random bits for each user
 bits = randi([0 1], noOfUsers, noOfInfoBitsPerUser);
+
 % Pass the data into the transmitter 
-[rxFrames, TXBITS, TXSYM] = generateFrames(bits);
+[rxFrames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate);
 numFrames = length(rxFrames);
 %% Channel Setup : Fading & Noise
 fadedFrames = zeros(numFrames, numOfQpskSymbolsPerFrame);

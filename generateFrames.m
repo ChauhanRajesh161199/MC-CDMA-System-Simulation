@@ -1,4 +1,4 @@
-function [frames, TXBITS, TXSYM] = generateFrames(bits)
+function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
     %% PARAMETERS
     % Dynamically determine the number of users and total bits from the input array
     [noOfUsers, noOfInfoBitsPerUser] = size(bits);
@@ -18,10 +18,18 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits)
     barkerSync = repmat(barker11,1,4);
     trainingSeq = repmat([1 -1],1,50);
     frameGuard = zeros(1,30);
-    
-    %% CHANNEL CODER
+
+    %% CHANNEL CODER 
+    if (1/targetCodeRate == 2)
+        GeneratorPolynomials = [7 5];
+    elseif (1/targetCodeRate == 3)
+        GeneratorPolynomials = [7 5 3];
+    elseif (1/targetCodeRate == 4) 
+        GeneratorPolynomials = [7 5 3 1];
+    else 
+        error('Invalid code rate! Please set targetCodeRate strictly to 1/2, 1/3, or 1/4.');
+    end
     ConstraintLength = 3;
-    GeneratorPolynomials = [7 5];
     codeRate = 1/length(GeneratorPolynomials);
     trellis = poly2trellis(ConstraintLength,GeneratorPolynomials);
     
