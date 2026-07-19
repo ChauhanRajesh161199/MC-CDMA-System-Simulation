@@ -14,9 +14,20 @@ spreadingFactor = 4;
 noOfOfdmSymbolsPerFrame = 4;
 bitspersymbol = 2;  % QPSK Modulation
 
-%% CHANNEL CODER
-ConstraintLength = 3;  
-GeneratorPolynomials = [7 5];
+%% Code Rate Configuration
+targetCodeRate = 1/2;
+
+%% CHANNEL CODER 
+if (1/targetCodeRate == 2)
+    GeneratorPolynomials = [7 5];
+elseif (1/targetCodeRate == 3)
+    GeneratorPolynomials = [7 5 3];
+elseif (1/targetCodeRate == 4) 
+    GeneratorPolynomials = [7 5 3 1];
+else 
+    error('Invalid code rate! Please set targetCodeRate strictly to 1/2, 1/3, or 1/4.');
+end
+ConstraintLength = 3;
 codeRate = 1/length(GeneratorPolynomials);
 trellis = poly2trellis(ConstraintLength,GeneratorPolynomials); 
 
