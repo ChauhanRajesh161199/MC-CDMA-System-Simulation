@@ -4,7 +4,7 @@ close all;
 
 %% PARAMETERS
 noOfUsers  = 4;
-noOfInfoBitsPerUser = 10000;
+noOfInfoBitsPerUser = 200000;
 Nfft = 256;
 cpLength = 16;
 guardLeft  = 8;
@@ -118,6 +118,18 @@ for frame = 1:numOfFrames
         ofdmInputUnspread(centerIdx - halfLen + 1 : centerIdx + halfLen) = txUnspread(:);
         ofdmTimeUnspread = ifft(ofdmInputUnspread, Nfft);
         
+        %% POWER NORMALIZATION
+        % MATLAB's ifft() divides by Nfft, which shrinks the signal. 
+        % We multiply by Nfft to restore it, then divide by the total variance 
+        % (active subcarriers * number of users) to normalize average power to 1.
+        scaleFactor = Nfft / sqrt(usedSubcarriers * noOfUsers);  
+        ofdmTime = ofdmTime * scaleFactor;
+        
+        % Normalize the unspread signal identically for fair PSD comparison
+        % (Assuming 1 user active in the unspread comparison)
+        scaleFactorUnspread = Nfft / sqrt(usedSubcarriers * 1); 
+        ofdmTimeUnspread = ofdmTimeUnspread * scaleFactorUnspread;
+
         %% CYCLIC PREFIX
         % for Spread
         cp = ofdmTime(end-cpLength+1:end);

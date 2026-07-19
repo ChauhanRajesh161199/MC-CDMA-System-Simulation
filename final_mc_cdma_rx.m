@@ -1,11 +1,9 @@
 clc;
 clear;
 close all;
-
 %% System Parameters
 noOfUsers = 4;
-noOfInfoBitsPerUser = 10000;
-
+noOfInfoBitsPerUser = 20000;
 % OFDM & Physical Layer
 Nfft = 256;
 cpLength = 16;
@@ -15,13 +13,11 @@ usedSubcarriers = Nfft - guardLeft - guardRight;
 spreadingFactor = 4;
 noOfOfdmSymbolsPerFrame = 4;
 bitspersymbol = 2; % QPSK
-
 % Channel Coder
 ConstraintLength = 3;
 GeneratorPolynomials = [7 5];
 codeRate = 1/length(GeneratorPolynomials);
 trellis = poly2trellis(ConstraintLength, GeneratorPolynomials);
-
 % Frame Structure & Synchronization
 agcField = repmat([1 -1],1,50);
 agcSamLen = length(agcField);
@@ -35,27 +31,22 @@ frameGuardLen = length(frameGuard);
 % Total no of QPSK symbols per frame
 numOfQpskSymbolsPerFrame = agcSamLen+trainingLen+barkerSyncLen+ ...
                             (Nfft+cpLength)*noOfOfdmSymbolsPerFrame+frameGuardLen; 
-
 % AGC Settings
 targetPower = 1;      
 tolerance   = 1e-3;   
 maxIter     = 20;
-
 % Derived Capacity Variables
 qpskSymbolsPerOfdmSymbol = usedSubcarriers / spreadingFactor;
 infoBitsPerOfdmSymbols = qpskSymbolsPerOfdmSymbol * bitspersymbol * codeRate;
 infoBitsPerFrame = infoBitsPerOfdmSymbols * noOfOfdmSymbolsPerFrame;
 numOfFrames = ceil(noOfInfoBitsPerUser / infoBitsPerFrame);
 walshCode = generateWalshCode(spreadingFactor);
-
 %% Transmitter
 % Generate random bits for each user
 bits = randi([0 1], noOfUsers, noOfInfoBitsPerUser);
-
 % Pass the data into the transmitter 
 [rxFrames, TXBITS, TXSYM] = generateFrames(bits);
 numFrames = length(rxFrames);
-
 %% Channel Setup : Fading & Noise
 fadedFrames = zeros(numFrames, numOfQpskSymbolsPerFrame);
 for frame = 1:numFrames
@@ -63,13 +54,11 @@ for frame = 1:numFrames
     h = (randn + 1j*randn)/sqrt(2);
     fadedFrames(frame,:) = h * txFrame;
 end
-
 %% 4. Receiver loop : Sample-by-Sample Real-Time Processing
-SNRdB = 0:2:26;
+SNRdB = -10:2:20;
 BER = zeros(size(SNRdB));
 SER = zeros(size(SNRdB));
 FER = zeros(size(SNRdB));
-
 for snridx = 1:length(SNRdB)
     snr = SNRdB(snridx);
     
@@ -123,18 +112,31 @@ for snridx = 1:length(SNRdB)
         
         %% Channel Estimation
         rxTraining = rxFrame(barkerEndIdx+1 : barkerEndIdx+trainingLen);
-        hMMSE = MMSE_Channel_Estimation(rxTraining, trainingSeq, noisePower);
-        rxFrameEq = rxFrame / hMMSE;
-        
-        %% Extract Payload
+        h_Lse = LSE_Channel_Estimation(rxTraining, trainingSeq ); 
+        h_Lse = mean(h_Lse);
+        rxFrameEq = rxFrame / h_Lse;
+        % 
+        % %% Extract Payload
+        % rxPayload = rxFrameEq(barkerEndIdx+trainingLen+1 : end-frameGuardLen);
+        % rxOFDM = reshape(rxPayload, Nfft+cpLength, noOfOfdmSymbolsPerFrame);
+        %% Extract Payload (with sync-failure guard)
+        expectedPayloadLen = (Nfft+cpLength)*noOfOfdmSymbolsPerFrame;
         rxPayload = rxFrameEq(barkerEndIdx+trainingLen+1 : end-frameGuardLen);
+        
+        if length(rxPayload) ~= expectedPayloadLen
+            RXBITS{frame} = double(rand(noOfUsers, infoBitsPerFrame) > 0.5);
+            RXSYM{frame} = zeros(noOfUsers, usedSubcarriers);
+            fprintf('Frame %d with SNR(dB) = %d : SYNC FAILURE (got %d samples, expected %d) - marked as lost frame\n', ...
+                frame, snr, length(rxPayload), expectedPayloadLen);
+            continue
+        end
+        
         rxOFDM = reshape(rxPayload, Nfft+cpLength, noOfOfdmSymbolsPerFrame);
         rxNoCP = rxOFDM(cpLength+1:end, :);
         rxFFT = fft(rxNoCP, Nfft);
         
         rxData = rxFFT(guardLeft+1 : guardLeft+usedSubcarriers, :); 
         rxData_flat = rxData(:); 
-
         % usedSubcarriers -> total qpsk symbols have info
         rxUsers = zeros(noOfUsers, usedSubcarriers);
         
@@ -217,10 +219,9 @@ semilogy(SNRdB, FER, '-s', 'LineWidth', 2);
 xlabel('SNR (dB)');
 ylabel('Error Rate');
 title('MC-CDMA System Performance');
-xlim([0 30]);   
+xlim([-10 20]);   
 ylim([1e-6 1]);
 legend('Bit Error Rate (BER)', 'Symbol Error Rate (SER)', 'Frame Error Rate (FER)');
-
 %% Generate Walsh Code
 function H = generateWalshCode(M)
     H = 1;
@@ -229,13 +230,10 @@ function H = generateWalshCode(M)
              H -H];
     end
 end
-
 %% MMSE estimation of Channel
-function h_MMSE = MMSE_Channel_Estimation(rxPilot, txPilot, noiseVar)
-    H_LS = rxPilot ./ txPilot;
-    Np = length(H_LS);
-    Rhh = eye(Np);
-    W = Rhh / (Rhh + noiseVar*eye(Np));
-    H_MMSE = (W * H_LS.').';
-    h_MMSE = mean(H_MMSE);
+function H_LSE = LSE_Channel_Estimation(rxPilot, txPilot)
+    
+    H_LSE = rxPilot ./ txPilot;
+    
+   
 end
