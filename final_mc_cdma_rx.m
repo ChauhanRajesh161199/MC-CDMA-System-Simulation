@@ -1,10 +1,11 @@
-clc;
+    clc;
 clear;
 close all;
 %% System Parameters
 noOfUsers = 4;
 noOfInfoBitsPerUser = 20000;
-% OFDM & Physical Layer
+M = 256; % Decide QPSK or QAM -M Modulation
+
 Nfft = 256;
 cpLength = 16;
 guardLeft  = 8;
@@ -12,7 +13,8 @@ guardRight = 8;
 usedSubcarriers = Nfft - guardLeft - guardRight;
 spreadingFactor = 4;
 noOfOfdmSymbolsPerFrame = 4;
-bitspersymbol = 2; % QPSK
+bitspersymbol = log2(M);
+
 %% Code Rate Configuration
 targetCodeRate = 1/4;
 
@@ -29,6 +31,7 @@ end
 ConstraintLength = 3;
 codeRate = 1/length(GeneratorPolynomials);
 trellis = poly2trellis(ConstraintLength, GeneratorPolynomials);
+
 % Frame Structure & Synchronization
 agcField = repmat([1 -1],1,50);
 agcSamLen = length(agcField);
@@ -39,35 +42,44 @@ trainingSeq = repmat([1 -1],1,50);
 trainingLen = length(trainingSeq);
 frameGuard=zeros(1,30);
 frameGuardLen = length(frameGuard);
-% Total no of QPSK symbols per frame
-numOfQpskSymbolsPerFrame = agcSamLen+trainingLen+barkerSyncLen+ ...
+
+% Total no of symbols per frame
+numOfTotalSymbolsPerFrame = agcSamLen+trainingLen+barkerSyncLen+ ...
                             (Nfft+cpLength)*noOfOfdmSymbolsPerFrame+frameGuardLen; 
 % AGC Settings
 targetPower = 1;      
 tolerance   = 1e-3;   
 maxIter     = 20;
+
 % Derived Capacity Variables
-qpskSymbolsPerOfdmSymbol = usedSubcarriers / spreadingFactor;
-infoBitsPerOfdmSymbols = qpskSymbolsPerOfdmSymbol * bitspersymbol * codeRate;
+symbolsPerOfdmSymbol = (usedSubcarriers/spreadingFactor);
+infoBitsPerOfdmSymbols = (usedSubcarriers/spreadingFactor)*bitspersymbol*codeRate;
 infoBitsPerFrame = infoBitsPerOfdmSymbols * noOfOfdmSymbolsPerFrame;
 numOfFrames = ceil(noOfInfoBitsPerUser / infoBitsPerFrame);
+
+%% GENERATE WALSH CODE - defined by spreading factor
 walshCode = generateWalshCode(spreadingFactor);
+
 %% Transmitter
 % Generate random bits for each user
 bits = randi([0 1], noOfUsers, noOfInfoBitsPerUser);
 
 % Pass the data into the transmitter 
-[rxFrames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate);
+[rxFrames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate, M);
 numFrames = length(rxFrames);
+
 %% Channel Setup : Fading & Noise
-fadedFrames = zeros(numFrames, numOfQpskSymbolsPerFrame);
+fadedFrames = zeros(numFrames, numOfTotalSymbolsPerFrame);
 for frame = 1:numFrames
     txFrame = rxFrames{frame};
     h = (randn + 1j*randn)/sqrt(2);
     fadedFrames(frame,:) = h * txFrame;
 end
-%% 4. Receiver loop : Sample-by-Sample Real-Time Processing
-SNRdB = -10:2:20;
+startSNRdB = -10;
+endSNRdB = 40;
+
+%% Receiver loop : Sample-by-Sample Real-Time Processing
+SNRdB = startSNRdB:2:endSNRdB;
 BER = zeros(size(SNRdB));
 SER = zeros(size(SNRdB));
 FER = zeros(size(SNRdB));
@@ -127,10 +139,7 @@ for snridx = 1:length(SNRdB)
         h_Lse = LSE_Channel_Estimation(rxTraining, trainingSeq ); 
         h_Lse = mean(h_Lse);
         rxFrameEq = rxFrame / h_Lse;
-        % 
-        % %% Extract Payload
-        % rxPayload = rxFrameEq(barkerEndIdx+trainingLen+1 : end-frameGuardLen);
-        % rxOFDM = reshape(rxPayload, Nfft+cpLength, noOfOfdmSymbolsPerFrame);
+     
         %% Extract Payload (with sync-failure guard)
         expectedPayloadLen = (Nfft+cpLength)*noOfOfdmSymbolsPerFrame;
         rxPayload = rxFrameEq(barkerEndIdx+trainingLen+1 : end-frameGuardLen);
@@ -147,8 +156,13 @@ for snridx = 1:length(SNRdB)
         rxNoCP = rxOFDM(cpLength+1:end, :);
         rxFFT = fft(rxNoCP, Nfft);
         
+        % Reverse the transmitter's OFDM power normalization
+        % so the M-QAM constellation amplitudes return to ideal 3GPP values
+        scaleFactor = Nfft / sqrt(usedSubcarriers * noOfUsers);
+        rxFFT = rxFFT / scaleFactor;
+        
         rxData = rxFFT(guardLeft+1 : guardLeft+usedSubcarriers, :); 
-        rxData_flat = rxData(:); 
+        rxData_flat = rxData(:);
         % usedSubcarriers -> total qpsk symbols have info
         rxUsers = zeros(noOfUsers, usedSubcarriers);
         
@@ -163,21 +177,20 @@ for snridx = 1:length(SNRdB)
         end
         userSymbols = rxUsers;
         
-        % Decision : QPSK constellation
-        rxSym = ((real(userSymbols)>0)*2-1 + 1j*((imag(userSymbols)>0)*2-1))/sqrt(2);
-        RXSYM{frame} = rxSym;
+        %% Decision : QPSK constellation
+        %% 3GPP M-QAM Demodulation
+        codedBitsRx = zeros(noOfUsers, bitspersymbol * size(userSymbols,2));
+        rxSym = zeros(size(userSymbols));
         
-        %% QPSK Demodulation
-        codedBitsRx = zeros(noOfUsers, 2*size(userSymbols,2));
         for user = 1:noOfUsers
-            sym = userSymbols(user,:);
-            bitsHat = zeros(1, 2*length(sym));
-            for k = 1:length(sym)
-                bitsHat(2*k-1) = real(sym(k)) < 0;
-                bitsHat(2*k)   = imag(sym(k)) < 0;
-            end
-            codedBitsRx(user,:) = bitsHat;
+            % 1. Extract bits using strict 3GPP decision boundaries
+            recoveredBits = symbolDemapper(userSymbols(user,:), M);
+            codedBitsRx(user,:) = recoveredBits;
+            
+            % 2. Remap bits back to ideal constellation points for SER calculation
+            rxSym(user,:) = symbolMapper(recoveredBits, M);
         end
+        RXSYM{frame} = rxSym;
         
         %% Viterbi Decoder
         decodedBits = zeros(noOfUsers, infoBitsPerFrame); 
@@ -230,8 +243,9 @@ semilogy(SNRdB, SER, '-o', 'LineWidth', 2);
 semilogy(SNRdB, FER, '-s', 'LineWidth', 2);
 xlabel('SNR (dB)');
 ylabel('Error Rate');
-title('MC-CDMA System Performance');
-xlim([-10 20]);   
+title(sprintf('MC-CDMA System Performance (Code Rate = 1/%d, QAM-%d)', ...
+    length(GeneratorPolynomials), M));
+xlim([startSNRdB endSNRdB]);   
 ylim([1e-6 1]);
 legend('Bit Error Rate (BER)', 'Symbol Error Rate (SER)', 'Frame Error Rate (FER)');
 %% Generate Walsh Code
@@ -248,4 +262,75 @@ function H_LSE = LSE_Channel_Estimation(rxPilot, txPilot)
     H_LSE = rxPilot ./ txPilot;
     
    
+end
+
+
+%% SYMBOL DEMAPPER FUNCTION (Strict 3GPP Hard Decisions)
+function bits = symbolDemapper(symbols, M)
+    I = real(symbols);
+    Q = imag(symbols);
+    
+    switch M
+        case 4 % QPSK
+            b_I = I < 0;
+            b_Q = Q < 0;
+            tempBits = [b_I(:) b_Q(:)];
+            
+        case 16 % 16-QAM
+            I = I * sqrt(10); Q = Q * sqrt(10);
+            b_I1 = I < 0;           b_Q1 = Q < 0;
+            b_I2 = abs(I) > 2;      b_Q2 = abs(Q) > 2;
+            tempBits = [b_I1(:) b_Q1(:) b_I2(:) b_Q2(:)];
+            
+        case 64 % 64-QAM
+            I = I * sqrt(42); Q = Q * sqrt(42);
+            b_I1 = I < 0;               b_Q1 = Q < 0;
+            b_I2 = abs(I) > 4;          b_Q2 = abs(Q) > 4;
+            b_I3 = abs(abs(I)-4) > 2;   b_Q3 = abs(abs(Q)-4) > 2;
+            tempBits = [b_I1(:) b_Q1(:) b_I2(:) b_Q2(:) b_I3(:) b_Q3(:)];
+            
+        case 256 % 256-QAM
+            I = I * sqrt(170); Q = Q * sqrt(170);
+            b_I1 = I < 0;                       b_Q1 = Q < 0;
+            b_I2 = abs(I) > 8;                  b_Q2 = abs(Q) > 8;
+            b_I3 = abs(abs(I)-8) > 4;           b_Q3 = abs(abs(Q)-8) > 4;
+            b_I4 = abs(abs(abs(I)-8)-4) > 2;    b_Q4 = abs(abs(abs(Q)-8)-4) > 2;
+            tempBits = [b_I1(:) b_Q1(:) b_I2(:) b_Q2(:) b_I3(:) b_Q3(:) b_I4(:) b_Q4(:)];
+            
+        otherwise
+            error('Unsupported modulation order for 3GPP demapping.');
+    end
+    
+    % Flatten into a 1D bitstream
+    bits = tempBits.';
+    bits = bits(:).';
+end
+
+%% SYMBOL MAPPER FUNCTION (Receiver SER calculation)
+function symbols = symbolMapper(bits, M)
+    switch M
+        case 4 % QPSK
+            tempBits = reshape(bits, 2, []).';
+            I = (1 - 2*tempBits(:,1)) / sqrt(2);
+            Q = (1 - 2*tempBits(:,2)) / sqrt(2);
+            symbols = (I + 1j*Q).';
+            
+        case 16 % 16-QAM
+            tempBits = reshape(bits, 4, []).';
+            I = (1 - 2*tempBits(:,1)) .* (2 - (1 - 2*tempBits(:,3))) / sqrt(10);
+            Q = (1 - 2*tempBits(:,2)) .* (2 - (1 - 2*tempBits(:,4))) / sqrt(10);
+            symbols = (I + 1j*Q).';
+            
+        case 64 % 64-QAM
+            tempBits = reshape(bits, 6, []).';
+            I = (1 - 2*tempBits(:,1)) .* (4 - (1 - 2*tempBits(:,3)) .* (2 - (1 - 2*tempBits(:,5)))) / sqrt(42);
+            Q = (1 - 2*tempBits(:,2)) .* (4 - (1 - 2*tempBits(:,4)) .* (2 - (1 - 2*tempBits(:,6)))) / sqrt(42);
+            symbols = (I + 1j*Q).';
+            
+        case 256 % 256-QAM
+            tempBits = reshape(bits, 8, []).';
+            I = (1 - 2*tempBits(:,1)) .* (8 - (1 - 2*tempBits(:,3)) .* (4 - (1 - 2*tempBits(:,5)) .* (2 - (1 - 2*tempBits(:,7))))) / sqrt(170);
+            Q = (1 - 2*tempBits(:,2)) .* (8 - (1 - 2*tempBits(:,4)) .* (4 - (1 - 2*tempBits(:,6)) .* (2 - (1 - 2*tempBits(:,8))))) / sqrt(170);
+            symbols = (I + 1j*Q).';
+    end
 end

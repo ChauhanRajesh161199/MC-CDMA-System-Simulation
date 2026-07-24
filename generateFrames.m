@@ -1,8 +1,7 @@
-function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
+function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate, M)
     %% PARAMETERS
     % Dynamically determine the number of users and total bits from the input array
     [noOfUsers, noOfInfoBitsPerUser] = size(bits);
-    
     Nfft = 256;
     cpLength = 16;
     guardLeft  = 8;
@@ -10,8 +9,11 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
     usedSubcarriers = Nfft - guardLeft - guardRight;
     spreadingFactor = 4;
     noOfOfdmSymbolsPerFrame = 4;
-    bitspersymbol = 2;
     
+    % Calculate bits per symbol based on Modulation Order (M)
+    bitspersymbol = log2(M);
+
+
     %% FRAME PREAMBLE
     agcField = repmat([1 -1],1,50);
     barker11 = [ 1 1 1 -1 -1 -1 1 -1 -1 1 -1 ];
@@ -32,17 +34,17 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
     ConstraintLength = 3;
     codeRate = 1/length(GeneratorPolynomials);
     trellis = poly2trellis(ConstraintLength,GeneratorPolynomials);
-    
+
     %% FRAME CAPACITY
+    symbolsPerOfdmSymbol = (usedSubcarriers/spreadingFactor);
     infoBitsPerOfdmSymbols = (usedSubcarriers/spreadingFactor)*bitspersymbol*codeRate;
     infoBitsPerFrame = infoBitsPerOfdmSymbols*noOfOfdmSymbolsPerFrame;
-    qpskSymbolsPerOfdmSymbol = (usedSubcarriers/spreadingFactor);
     numOfFrames = ceil(noOfInfoBitsPerUser/infoBitsPerFrame);
     
     %% WALSH CODE
     walshCode = generateWalshCode(spreadingFactor);
     
-    %% STORAGE (Outputs)
+    %% STORAGE DATA
     frames = cell(1,numOfFrames);
     TXBITS = cell(1,numOfFrames);
     TXSYM  = cell(1,numOfFrames);
@@ -65,30 +67,31 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
         for user = 1:noOfUsers
             codedBits(user,:) = convenc(infoBitsPerFrameContainer(user,:),trellis);
         end
+
+        %% MODULATION 
+        totalSymbolsPerFrame = symbolsPerOfdmSymbol*noOfOfdmSymbolsPerFrame;
+        mappedSymbols = zeros(noOfUsers, totalSymbolsPerFrame);
         
-        %% QPSK
-        totalQpskSymbolsPerFrame = qpskSymbolsPerOfdmSymbol*noOfOfdmSymbolsPerFrame;
-        qpskSymbols = zeros(noOfUsers, totalQpskSymbolsPerFrame);
         for user = 1:noOfUsers
-            tempBits = reshape(codedBits(user,:),2,[]).';
-            qpskSymbols(user,:) = ((1-2*tempBits(:,1)) + 1j*(1-2*tempBits(:,2)))/sqrt(2);
+            % Pass the user's coded bits directly into the 3GPP mapping function
+            mappedSymbols(user,:) = symbolMapper(codedBits(user,:), M);
         end
         
-        % Save true QPSK symbols into cell array for SER calculation at receiver
-        % This stores the exact 4x240 double matrix you requested
-        TXSYM{frame} = qpskSymbols;
-        
+        % Save true mapped symbols into cell array for SER calculation at receiver
+        TXSYM{frame} = mappedSymbols;
+
         %% OFDM
         OfdmFrame = zeros(Nfft+cpLength, noOfOfdmSymbolsPerFrame);
-        qpskSymbolsPerOFDMBeforeSpreading = usedSubcarriers/spreadingFactor;
+        symbolsPerOFDMBeforeSpreading = usedSubcarriers/spreadingFactor;
         
         for ofdm = 1:noOfOfdmSymbolsPerFrame
-            startSym = (ofdm-1)*qpskSymbolsPerOFDMBeforeSpreading + 1;
-            endSym = ofdm*qpskSymbolsPerOFDMBeforeSpreading;
-            currentSymbols = qpskSymbols(:,startSym:endSym);
+            startSym = (ofdm-1)*symbolsPerOFDMBeforeSpreading + 1;
+            endSym = ofdm*symbolsPerOFDMBeforeSpreading;
+            % Fetch from the newly named mappedSymbols array
+            currentSymbols = mappedSymbols(:,startSym:endSym);
             
             %% SPREADING
-            spreadSignal = zeros(noOfUsers, qpskSymbolsPerOFDMBeforeSpreading*spreadingFactor);
+            spreadSignal = zeros(noOfUsers, symbolsPerOFDMBeforeSpreading*spreadingFactor);
             for user = 1:noOfUsers
                 code = walshCode(user,:);
                 userSpread = [];
@@ -106,6 +109,7 @@ function [frames, TXBITS, TXSYM] = generateFrames(bits, targetCodeRate)
             ofdmInput = zeros(Nfft,1);
             ofdmInput(guardLeft+1:guardLeft+usedSubcarriers) = txCombined(:);
             ofdmTime = ifft(ofdmInput,Nfft);
+
             %% CP ADDITION (with power normalization)
             scaleFactor = Nfft / sqrt(usedSubcarriers * noOfUsers);  % normalizes avg power to 1
             ofdmTime = ofdmTime * scaleFactor;
@@ -129,5 +133,49 @@ function H = generateWalshCode(sf)
     while size(H,1) < sf
         H = [H H;
              H -H];
+    end
+end
+
+
+%% SYMBOL MAPPER FUNCTION (3GPP Standard)
+function symbols = symbolMapper(bits, M)
+    switch M
+        case 4 % QPSK
+            tempBits = reshape(bits, 2, []).';
+            b_I = tempBits(:,1);
+            b_Q = tempBits(:,2);
+            I = (1 - 2*b_I) / sqrt(2);
+            Q = (1 - 2*b_Q) / sqrt(2);
+            symbols = (I + 1j*Q).';
+            
+        case 16 % 16-QAM
+            tempBits = reshape(bits, 4, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            I = (1 - 2*b_I1) .* (2 - (1 - 2*b_I2)) / sqrt(10);
+            Q = (1 - 2*b_Q1) .* (2 - (1 - 2*b_Q2)) / sqrt(10);
+            symbols = (I + 1j*Q).';
+            
+        case 64 % 64-QAM
+            tempBits = reshape(bits, 6, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            b_I3 = tempBits(:,5); b_Q3 = tempBits(:,6);
+            I = (1 - 2*b_I1) .* (4 - (1 - 2*b_I2) .* (2 - (1 - 2*b_I3))) / sqrt(42);
+            Q = (1 - 2*b_Q1) .* (4 - (1 - 2*b_Q2) .* (2 - (1 - 2*b_Q3))) / sqrt(42);
+            symbols = (I + 1j*Q).';
+            
+        case 256 % 256-QAM
+            tempBits = reshape(bits, 8, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            b_I3 = tempBits(:,5); b_Q3 = tempBits(:,6);
+            b_I4 = tempBits(:,7); b_Q4 = tempBits(:,8);
+            I = (1 - 2*b_I1) .* (8 - (1 - 2*b_I2) .* (4 - (1 - 2*b_I3) .* (2 - (1 - 2*b_I4)))) / sqrt(170);
+            Q = (1 - 2*b_Q1) .* (8 - (1 - 2*b_Q2) .* (4 - (1 - 2*b_Q3) .* (2 - (1 - 2*b_Q4)))) / sqrt(170);
+            symbols = (I + 1j*Q).';
+            
+        otherwise
+            error('Unsupported modulation order. 3GPP mapping supports M = 4, 16, 64, or 256.');
     end
 end

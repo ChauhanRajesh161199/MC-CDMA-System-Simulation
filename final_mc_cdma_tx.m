@@ -216,3 +216,58 @@ function H = generateWalshCode(sf)
              H -H];
     end
 end
+
+
+%% SYMBOL MAPPER FUNCTION (3GPP TS 38.211 / 36.211 Standard)
+function symbols = symbolMapper(bits, M)
+    % bits : 1D array of binary data (row vector)
+    % M    : Modulation order (4, 16, 64, 256)
+    
+    switch M
+        case 4 % QPSK
+            tempBits = reshape(bits, 2, []).';
+            b_I = tempBits(:,1);
+            b_Q = tempBits(:,2);
+            
+            % 3GPP QPSK Equation
+            I = (1 - 2*b_I) / sqrt(2);
+            Q = (1 - 2*b_Q) / sqrt(2);
+            symbols = (I + 1j*Q).';
+            
+        case 16 % 16-QAM
+            tempBits = reshape(bits, 4, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            
+            % 3GPP 16-QAM Equation
+            I = (1 - 2*b_I1) .* (2 - (1 - 2*b_I2)) / sqrt(10);
+            Q = (1 - 2*b_Q1) .* (2 - (1 - 2*b_Q2)) / sqrt(10);
+            symbols = (I + 1j*Q).';
+            
+        case 64 % 64-QAM
+            tempBits = reshape(bits, 6, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            b_I3 = tempBits(:,5); b_Q3 = tempBits(:,6);
+            
+            % 3GPP 64-QAM Equation
+            I = (1 - 2*b_I1) .* (4 - (1 - 2*b_I2) .* (2 - (1 - 2*b_I3))) / sqrt(42);
+            Q = (1 - 2*b_Q1) .* (4 - (1 - 2*b_Q2) .* (2 - (1 - 2*b_Q3))) / sqrt(42);
+            symbols = (I + 1j*Q).';
+            
+        case 256 % 256-QAM
+            tempBits = reshape(bits, 8, []).';
+            b_I1 = tempBits(:,1); b_Q1 = tempBits(:,2);
+            b_I2 = tempBits(:,3); b_Q2 = tempBits(:,4);
+            b_I3 = tempBits(:,5); b_Q3 = tempBits(:,6);
+            b_I4 = tempBits(:,7); b_Q4 = tempBits(:,8);
+            
+            % 3GPP 256-QAM Equation
+            I = (1 - 2*b_I1) .* (8 - (1 - 2*b_I2) .* (4 - (1 - 2*b_I3) .* (2 - (1 - 2*b_I4)))) / sqrt(170);
+            Q = (1 - 2*b_Q1) .* (8 - (1 - 2*b_Q2) .* (4 - (1 - 2*b_Q3) .* (2 - (1 - 2*b_Q4)))) / sqrt(170);
+            symbols = (I + 1j*Q).';
+            
+        otherwise
+            error('Unsupported modulation order. 3GPP mapping supports M = 4, 16, 64, or 256.');
+    end
+end
